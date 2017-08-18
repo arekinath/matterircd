@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"encoding/json"
 
 	"github.com/42wim/matterbridge/matterclient"
 	"github.com/mattermost/platform/model"
@@ -82,14 +83,42 @@ func (u *User) logoutFromMattermost() error {
 	return nil
 }
 
+func ircify(s string) string {
+	ircsafe := func(r rune) rune {
+		switch {
+		case r == '_':
+			return r
+		case r == '-':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		}
+		return -1
+	}
+	return strings.Map(ircsafe, s)
+}
+
+func ircnickfor(mmuser *model.User) string {
+	nick := mmuser.Nickname
+	if nick == "" {
+		nick = mmuser.Username
+	}
+	return ircify(strings.ToLower(nick))
+}
+
 func (u *User) createMMUser(mmuser *model.User) *User {
 	if mmuser == nil {
 		return nil
 	}
-	if ghost, ok := u.Srv.HasUser(mmuser.Username); ok {
+	nick := ircnickfor(mmuser)
+	if ghost, ok := u.Srv.HasUser(nick); ok {
 		return ghost
 	}
-	ghost := &User{Nick: mmuser.Username, User: mmuser.Id, Real: mmuser.FirstName + " " + mmuser.LastName, Host: u.mc.Client.Url, Roles: mmuser.Roles, channels: map[Channel]struct{}{}}
+	ghost := &User{Nick: nick, User: mmuser.Id, Real: mmuser.FirstName + " " + mmuser.LastName, Host: u.mc.Client.Url, Roles: mmuser.Roles, channels: map[Channel]struct{}{}}
 	ghost.MmGhostUser = true
 	u.Srv.Add(ghost)
 	return ghost
@@ -182,18 +211,19 @@ func (u *User) addUserToChannelWorker(channels <-chan *model.Channel, throttle <
 		// traverse the order in reverse
 		for i := len(postlist.Order) - 1; i >= 0; i-- {
 			p := postlist.Posts[postlist.Order[i]]
-			if p.Type == model.POST_JOIN_LEAVE {
+			if p.Type == "system_join_channel" || p.Type == "system_leave_channel" {
 				continue
 			}
 			ts := time.Unix(0, p.CreateAt*int64(time.Millisecond))
 			for _, post := range strings.Split(p.Message, "\n") {
 				if user, ok := u.mc.Users[p.UserId]; ok {
+					nick := ircify(user.Username)
 					date := ts.Format("2006-01-02")
 					if date != prevDate {
 						spoof("matterircd", fmt.Sprintf("Replaying since %s", date))
 						prevDate = date
 					}
-					spoof(user.Username, fmt.Sprintf("[%s] %s", ts.Format("15:04"), post))
+					spoof(nick, fmt.Sprintf("[%s] %s", ts.Format("15:04"), post))
 				}
 			}
 		}
@@ -242,7 +272,7 @@ func (u *User) handleWsActionPost(rmsg *model.WebSocketEvent) {
 			logger.Debugf("message is sent from matterirc, not relaying %#v", data.Message)
 			return
 		}
-		if data.Type == model.POST_JOIN_LEAVE {
+		if data.Type == "system_join_leave" || data.Type == "system_join_channel" || data.Type == "system_leave_channel" {
 			logger.Debugf("our own join/leave message. not relaying %#v", data.Message)
 			return
 		}
@@ -289,13 +319,6 @@ func (u *User) handleWsActionPost(rmsg *model.WebSocketEvent) {
 	}
 
 	msgs := strings.Split(data.Message, "\n")
-	// direct message
-	if props["channel_type"] == "D" {
-		// our own message, ignore because we can't handle/fake those on IRC
-		if data.UserId == u.mc.User.Id {
-			return
-		}
-	}
 
 	if data.Type == model.POST_JOIN_LEAVE || data.Type == "system_leave_channel" || data.Type == "system_join_channel" {
 		logger.Debugf("join/leave message. not relaying %#v", data.Message)
@@ -315,13 +338,30 @@ func (u *User) handleWsActionPost(rmsg *model.WebSocketEvent) {
 	if len(msgs) > 0 && rmsg.Event == model.WEBSOCKET_EVENT_POST_EDITED {
 		msgs[len(msgs)-1] = msgs[len(msgs)-1] + " (edited)"
 	}
+
+	if data.Type == "system_join_channel" || data.Type == "system_leave_channel" {
+		logger.Debugf("join/leave message. skipping %#v", data.Message)
+		return
+	}
+
 	// check if we have a override_username (from webhooks) and use it
 	for _, m := range msgs {
 		if m == "" {
 			continue
 		}
 		if props["channel_type"] == "D" {
-			u.MsgSpoofUser(spoofUsername, m)
+			if data.UserId == u.mc.User.Id {
+				var mentions []string
+				err := json.Unmarshal([]byte(props["mentions"].(string)), &mentions)
+				if err != nil {
+					continue
+				}
+				othGhost := u.createMMUser(u.mc.GetUser(mentions[0]))
+				othUsername := othGhost.Nick
+				u.MsgSpoofSelfUser(othUsername, m)
+			} else {
+				u.MsgSpoofUser(spoofUsername, m)
+			}
 		} else {
 			ch.SpoofMessage(spoofUsername, m)
 		}
@@ -418,6 +458,15 @@ func (u *User) MsgSpoofUser(rcvuser string, msg string) {
 		Trailing: msg,
 	})
 
+}
+
+func (u *User) MsgSpoofSelfUser(rcvuser string, msg string) {
+	u.Encode(&irc.Message{
+		Prefix:   &irc.Prefix{Name: rcvuser, User: rcvuser, Host: rcvuser},
+		Command:  irc.NOTICE,
+		Params:   []string{u.Nick},
+		Trailing: "-> " + msg,
+	})
 }
 
 // sync IRC with mattermost channel state

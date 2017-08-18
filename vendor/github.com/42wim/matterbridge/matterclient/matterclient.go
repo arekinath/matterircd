@@ -592,7 +592,7 @@ func (m *MMClient) createCookieJar(token string) *cookiejar.Jar {
 }
 
 // SendDirectMessage sends a direct message to specified user
-func (m *MMClient) SendDirectMessage(toUserId string, msg string) {
+func (m *MMClient) SendDirectMessage(toUserId string, msg string, props map[string]interface{}) {
 	m.log.Debugf("SendDirectMessage to %s, msg %s", toUserId, msg)
 	// create DM channel (only happens on first message)
 	_, err := m.Client.CreateDirectChannel(toUserId)
@@ -614,7 +614,7 @@ func (m *MMClient) SendDirectMessage(toUserId string, msg string) {
 
 	// build & send the message
 	msg = strings.Replace(msg, "\r", "", -1)
-	post := &model.Post{ChannelId: m.GetChannelId(channelName, ""), Message: msg}
+	post := &model.Post{ChannelId: m.GetChannelId(channelName, ""), Message: msg, Props: props}
 	m.Client.CreatePost(post)
 }
 

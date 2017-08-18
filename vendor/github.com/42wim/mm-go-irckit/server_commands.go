@@ -185,8 +185,7 @@ func CmdMode(s Server, u *User, msg *irc.Message) error {
 			r = append(r, &irc.Message{
 				Prefix:   s.Prefix(),
 				Command:  irc.RPL_CHANNELMODEIS,
-				Params:   []string{u.Nick, channel},
-				Trailing: " " + " ",
+				Params:   []string{u.Nick, channel, "+nt", ""},
 			})
 		}
 	case "b":
@@ -363,6 +362,11 @@ func CmdPrivMsg(s Server, u *User, msg *irc.Message) error {
 			return nil
 		}
 		if toUser.MmGhostUser {
+			// CTCP ACTION (/me)
+			if strings.HasPrefix(msg.Trailing, "\x01ACTION ") {
+				msg.Trailing = strings.Replace(msg.Trailing, "\x01ACTION ", "", -1)
+				msg.Trailing = "*" + msg.Trailing + "*"
+			}
 			if u.sc != nil {
 				_, _, dchannel, err := u.sc.OpenIMChannel(toUser.User)
 				if err != nil {
@@ -378,7 +382,9 @@ func CmdPrivMsg(s Server, u *User, msg *irc.Message) error {
 				}
 			}
 			if u.mc != nil {
-				u.mc.SendDirectMessage(toUser.User, msg.Trailing)
+				props := make(map[string]interface{})
+				props["matterircd"] = true
+				u.mc.SendDirectMessage(toUser.User, msg.Trailing, props)
 			}
 			return nil
 		}

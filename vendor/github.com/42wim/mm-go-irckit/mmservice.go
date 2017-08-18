@@ -214,7 +214,7 @@ func scrollback(u *User, toUser *User, args []string, service string) {
 		return
 	}
 	for i := len(postlist.Order) - 1; i >= 0; i-- {
-		nick := u.mc.GetUser(postlist.Posts[postlist.Order[i]].UserId).Username
+		nick := ircnickfor(u.mc.GetUser(postlist.Posts[postlist.Order[i]].UserId))
 		for _, post := range strings.Split(postlist.Posts[postlist.Order[i]].Message, "\n") {
 			if post != "" {
 				u.MsgUser(toUser, "<"+nick+"> "+post)
